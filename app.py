@@ -64,7 +64,9 @@ days, grillas, unknown_files, sony_files_raw = result
 
 # ── DETECTION TABLE ───────────────────────────────────────────────────────────
 if uploaded:
-    st.markdown(t('detected'))
+    file_count = len(uploaded)
+    count_label = f'{file_count} archivo{"s" if file_count != 1 else ""}' if lang == 'es' else f'{file_count} file{"s" if file_count != 1 else ""}'
+    st.markdown(f'{t("detected")} ({count_label})')
     CH_DISPLAY = {'catv':'CATV 🌎','tvd':'TVD 📺','latam':'Pasiones Latam 🌹',
                   'us':'Pasiones US ⭐','tn':'Fast Todonovelas 📺'}
     rows = []
@@ -295,9 +297,17 @@ if st.button(t('run'), type='primary', use_container_width=True):
     full_text = '\n'.join(all_lines)
 
     if all_manual_warns:
-        warn_lines = ['⚠ MANUAL REVIEW NEEDED:' if lang == 'en' else '⚠ REVISIÓN MANUAL REQUERIDA:']
+        warn_header = '⚠ MANUAL REVIEW NEEDED:' if lang == 'en' else '⚠ REVISIÓN MANUAL REQUERIDA:'
+        # Group by channel label
+        from collections import defaultdict
+        grouped = defaultdict(list)
         for ch_lbl, d_str, cnt in all_manual_warns:
-            warn_lines.append(f'  {ch_lbl} — {d_str}: {cnt} block{"s" if cnt>1 else ""} need manual review')
+            grouped[ch_lbl].append((d_str, cnt))
+        warn_lines = [warn_header]
+        for ch_lbl, entries in grouped.items():
+            warn_lines.append(f'{ch_lbl}')
+            for d_str, cnt in entries:
+                warn_lines.append(f'    {d_str}: {cnt} block{"s" if cnt>1 else ""} need{"s" if cnt==1 else ""} manual review')
         st.error('\n'.join(warn_lines))
 
     # Build tab structure: All + per-date (regular + Sony mixed) + dedicated Sony tabs
