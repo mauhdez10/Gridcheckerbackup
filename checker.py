@@ -3016,5 +3016,15 @@ def generate_report_holatv_v2(channel, log_rows, dx_count, cx_count,
         lines += ni if ni else [f'  {T("ok_ingested", lang)}']
         lines.append('')
 
+        lines.append(f'── [6] {"BUGS CHECK" if lang=="en" else "VERIFICACIÓN DE BUGS"} ──')
+        bi = check_bugs(playlist, current_start_utc, lang)
+        lines += bi if bi else [f'  {T("ok_bugs", lang)}']
+        lines.append('')
+
+        lines.append(f'── [7] {"CUE TONES" if lang=="en" else "CUE TONES"} ──')
+        ci = check_cue_tones(playlist, lang)
+        lines += ci if ci else [f'  {T("ok_cues", lang)}']
+        lines.append('')
+
     lines.append(sep)
     return '\n'.join(str(l) for l in lines)
