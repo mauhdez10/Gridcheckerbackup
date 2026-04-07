@@ -99,6 +99,7 @@ if uploaded:
 if uploaded:
     st.markdown(f"**{'Detected files' if lang=='en' else 'Archivos detectados'}: {total_detected} / {total_uploaded} uploaded**")
     CH_DISPLAY = {'catv':'CATV 🌎','tvd':'TVD 📺','latam':'Pasiones Latam 🌹',
+                  'hu':'Hola TV US 🤝','hl':'Hola TV Latam 🌍',
                   'us':'Pasiones US ⭐','tn':'Fast Todonovelas 📺'}
     rows = []
     for (date_str, channel), info in sorted(days.items()):
@@ -199,7 +200,7 @@ if st.button(t('run'), type='primary', use_container_width=True):
         'catv': 'CATV', 'tvd': 'TVD',
         'latam': 'Pasiones Latam', 'us': 'Pasiones US',
         'tn': 'Fast Todonovelas',
-        'hu': 'HolaTV US 👋', 'hl': 'HolaTV Latam 🌺',
+        'hu': 'Hola TV US 🤝', 'hl': 'Hola TV Latam 🌍',
     }
 
     def process_one(channel, json_file, xml_file, grilla_file):
@@ -260,7 +261,8 @@ if st.button(t('run'), type='primary', use_container_width=True):
     ]
 
     all_manual_warns = []  # list of (channel_label, date_str, count)
-    CH_DISPLAY = {'catv':'CATV 🌎','tvd':'TVD 📺','latam':'Pasiones Latam 🌹','us':'Pasiones US ⭐','tn':'Fast Todonovelas 📺'}
+    CH_DISPLAY = {'catv':'CATV 🌎','tvd':'TVD 📺','latam':'Pasiones Latam 🌹',
+                  'hu':'Hola TV US 🤝','hl':'Hola TV Latam 🌍','us':'Pasiones US ⭐','tn':'Fast Todonovelas 📺'}
     with st.spinner(t('running')):
         for date_str in sorted_dates:
             d_lines = [f'{"DATE" if lang=="en" else "FECHA"}: {date_str}', '─'*60]

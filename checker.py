@@ -2861,11 +2861,13 @@ def check_holatv_programs_v2(grilla_entries, log_blocks, current_start_utc, lang
         if not g_in_future_b and not b_in_future_g:
             del_lbl = 'DELETED' if lang=='en' else 'ELIMINADO'
             add_lbl = 'ADDED'   if lang=='en' else 'AGREGADO'
-            issues.append(f'  ↔  {del_lbl}: {g["code"]} ep{g["episode"]} / {add_lbl}: {b["base_id"]} @ {fmt_t(b["start_utc"])}')
+            _g_desc = g["h1t_ref"] or f'{g["code"]} ep{g["episode"]}'
+            issues.append(f'  ↔  {del_lbl}: {_g_desc} / {add_lbl}: {b["base_id"]} @ {fmt_t(b["start_utc"])}')
             gi += 1; bi += 1
         elif not g_in_future_b:
             not_lbl = 'NOT IN LOG' if lang=='en' else 'NO EN LOG'
-            issues.append(f'  ✗  {not_lbl}: {g["code"]} ep{g["episode"]} @ {g["time_slot"]}')
+            _g_desc = g["h1t_ref"] or f'{g["code"]} ep{g["episode"]}'
+            issues.append(f'  ✗  {not_lbl}: {_g_desc} @ {g["time_slot"]}')
             gi += 1
         elif not b_in_future_g:
             ext_lbl = 'EXTRA IN LOG' if lang=='en' else 'EXTRA EN LOG'
@@ -2888,44 +2890,35 @@ def check_holatv_programs_v2(grilla_entries, log_blocks, current_start_utc, lang
 
     while gi < len(grilla_shows):
         not_lbl = 'NOT IN LOG' if lang=='en' else 'NO EN LOG'
-        issues.append(f'  ✗  {not_lbl}: {grilla_shows[gi]["code"]} ep{grilla_shows[gi]["episode"]} @ {grilla_shows[gi]["time_slot"]}')
+        _g_desc = grilla_shows[gi]["h1t_ref"] or f'{grilla_shows[gi]["code"]} ep{grilla_shows[gi]["episode"]}'
+        issues.append(f'  ✗  {not_lbl}: {_g_desc} @ {grilla_shows[gi]["time_slot"]}')
         gi += 1
     while bi < len(log_shows):
         ext_lbl = 'EXTRA IN LOG' if lang=='en' else 'EXTRA EN LOG'
         issues.append(f'  ✗  {ext_lbl}: {log_shows[bi]["base_id"]} @ {fmt_t(log_shows[bi]["start_utc"])}')
         bi += 1
 
-    # ── INF check: each INF grilla slot should have a HPP block nearby ──
+    # ── INF check: Counter-based — count INF slots in grilla vs HPP in log ──
     if grilla_inf:
-        inf_lbl = '── Infomercial slots' if lang=='en' else '── Slots de infomerciales'
-        issues.append(f'  {inf_lbl} ({len(grilla_inf)} in grilla, {len(log_hpp)} HPP in log):')
-        matched_hpp = set()
-        for g in grilla_inf:
-            if not g['expected_utc']: continue
-            exp = g['expected_utc']
-            best = None
-            best_diff = 99999
-            for i, b in enumerate(log_hpp):
-                if i in matched_hpp: continue
-                if not b['start_utc']: continue
-                diff = abs((b['start_utc'] - exp).total_seconds())
-                if diff < best_diff:
-                    best_diff = diff; best = i
-            if best is not None and best_diff <= 3600:  # within 60min
-                matched_hpp.add(best)
-                issues.append(f'    ✓  INF @ {g["time_slot"]} → {log_hpp[best]["base_id"]} @ {fmt_t(log_hpp[best]["start_utc"])}')
-            else:
-                issues.append(f'    ✗  INF @ {g["time_slot"]} — {"no HPP found in log" if lang=="en" else "sin HPP en log"}')
+        n_grilla_inf = len(grilla_inf)
+        n_log_hpp    = len(log_hpp)
+        inf_lbl = 'Infomercials' if lang=='en' else 'Infomerciales'
+        if n_grilla_inf == n_log_hpp:
+            issues.append(f'  ✓  {inf_lbl}: {n_grilla_inf} in grilla, {n_log_hpp} HPP in log — match')
+        else:
+            diff_inf = n_log_hpp - n_grilla_inf
+            sign = '+' if diff_inf > 0 else ''
+            issues.append(f'  ✗  {inf_lbl}: grilla={n_grilla_inf}, log={n_log_hpp} ({sign}{diff_inf})')
 
     if not any('✗' in i or '↔' in i for i in issues):
         issues.append(f'  ✓  {"All shows match log" if lang=="en" else "Todos los programas coinciden con el log"}')
     return issues
 
 
-def check_holatv_timing_v2(grilla_entries, log_blocks, current_start_utc, lang, tolerance_secs=1800):
+def check_holatv_timing_v2(grilla_entries, log_blocks, current_start_utc, lang, tolerance_secs=2700):
     """
     For each grilla entry compare expected UTC time to actual log block start.
-    tolerance_secs: 1800 = 30 min (grilla is approximate to 30-min slots)
+    tolerance_secs: 2700 = 45 min (grilla slots are approximate)
     """
     if not grilla_entries or not log_blocks:
         return [f'  ℹ  {"Timing check skipped — no data" if lang=="en" else "Timing omitido — sin datos"}']
