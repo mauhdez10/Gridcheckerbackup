@@ -178,7 +178,8 @@ available = sorted(set(ch for (_, ch) in days.keys()) | set(grillas.keys()))
 sony_codes_present = sorted(set(sf['code'] for sf in sony_files_raw))
 all_options = available + sony_codes_present
 CH_FORMAT = {'catv':'CATV','tvd':'TVD','latam':'Pasiones Latam',
-             'us':'Pasiones US','tn':'Fast Todonovelas'}
+             'us':'Pasiones US','tn':'Fast Todonovelas',
+             'hu':'Hola TV US 🤝','hl':'Hola TV Latam 🌍'}
 CH_FORMAT.update({code: f'{code} {SONY_EMOJI.get(code,"📺")} {SONY_CHANNEL_MAP.get(code,code)}' for code in sony_codes_present})
 
 if all_options:

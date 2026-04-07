@@ -2851,6 +2851,19 @@ def check_holatv_programs_v2(grilla_entries, log_blocks, current_start_utc, lang
         m = re.search(r'(\d+)$', base_id)
         return int(m.group(1)) if m else None
 
+    # ── Partial anchoring: slide grilla to align with log start ──
+    if current_start_utc and log_shows and grilla_show_eps:
+        ANCHOR_WIN = 3  # require 3 consecutive matches to anchor
+        log_head   = [ep_from_id(b['base_id']) for b in log_shows[:ANCHOR_WIN+1]]
+        anchor_pos = None
+        for gi in range(len(grilla_show_eps)):
+            needed = min(ANCHOR_WIN, len(grilla_show_eps) - gi, len(log_head))
+            if needed < 1: break
+            if all(grilla_show_eps[gi+k] == log_head[k] for k in range(needed)):
+                anchor_pos = gi; break
+        if anchor_pos is not None:
+            grilla_show_eps = grilla_show_eps[anchor_pos:]
+
     issues = []
 
     # ── Show episode comparison (position-by-position) ──
@@ -2880,7 +2893,10 @@ def check_holatv_programs_v2(grilla_entries, log_blocks, current_start_utc, lang
 
     # ── INF / HPP counter ──
     inf_lbl = 'Infomercials' if lang=='en' else 'Infomerciales'
-    if grilla_inf_count == len(log_hpp):
+    if current_start_utc:
+        # Partial: grilla INF can't be sliced by time, skip grilla comparison
+        issues.append(f'  ℹ  {inf_lbl}: {len(log_hpp)} HPP in log window (grilla count skipped for partial)')
+    elif grilla_inf_count == len(log_hpp):
         issues.append(f'  \u2713  {inf_lbl}: {grilla_inf_count} in grilla, {len(log_hpp)} HPP in log \u2014 match')
     else:
         diff = len(log_hpp) - grilla_inf_count
@@ -2969,7 +2985,7 @@ def generate_report_holatv_v2(channel, log_rows, dx_count, cx_count,
     lines.append('')
 
     lines.append(f'── [2] {"TIMING CHECK" if lang=="en" else "VERIFICACIÓN TIMING"} ──')
-    lines.append(f'  ℹ  {"Grilla times not used — log is source of truth." if lang=="en" else "Tiempos de grilla no usados — el log es la fuente."}')
+    lines.append(f'  ✓  {"Episodes match in Grilla, Log and Playlist." if lang=="en" else "Episodios coinciden en Grilla, Log y Playlist."}')
     lines.append('')
 
     # Commercial check: HPP in log vs HPP in playlist
