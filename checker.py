@@ -2702,218 +2702,196 @@ def group_holatv_blocks(log_rows):
 
 def parse_grilla_holatv_v2(filepath_or_bytes, target_date):
     """
-    Parse HolaTV PDF grilla using pdfplumber.
-    Returns ordered list of:
-      {code, episode, time_slot, h1t_ref, expected_utc, is_inf}
-    h1t_ref: e.g. 'H1TVDR045' (None for INF entries)
-    expected_utc: grilla ET time converted to UTC
+    Parse HolaTV PDF grilla — extracts episode numbers in column order.
+    Uses vertical-distance-first code matching + digit-token merging.
+    Returns (show_eps, inf_count):
+      show_eps: list of int episode numbers for real shows, in schedule order
+      inf_count: int number of INF slots found in the column
     """
     try:
-        import pdfplumber
+        import pdfplumber as _ppl
     except ImportError:
-        return []
+        return [], 0
     try:
         if hasattr(filepath_or_bytes, 'read'):
             filepath_or_bytes.seek(0)
             raw = filepath_or_bytes.read()
             filepath_or_bytes.seek(0)
-            import tempfile, os
+            import tempfile, os as _os
             tmp = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
             tmp.write(raw); tmp.close()
-            pdf_path = tmp.name
-            cleanup  = True
+            pdf_path = tmp.name; cleanup = True
         else:
-            pdf_path = filepath_or_bytes
-            cleanup  = False
+            pdf_path = filepath_or_bytes; cleanup = False
 
         all_words = []
-        with pdfplumber.open(pdf_path) as pdf:
+        with _ppl.open(pdf_path) as pdf:
             for pg_idx, page in enumerate(pdf.pages):
-                words  = page.extract_words(x_tolerance=3, y_tolerance=3)
+                words  = page.extract_words(x_tolerance=8, y_tolerance=3)
                 page_h = float(page.height)
                 for w in words:
                     all_words.append({**w, 'abs_top': w['top'] + pg_idx * page_h})
         if cleanup:
-            import os; os.unlink(pdf_path)
+            import os as _os2; _os2.unlink(pdf_path)
 
+        # ── Day column detection ──
         date_pat = re.compile(r'^(\d{2})/(\d{2})$')
         day_cols = {}
         for i, w in enumerate(all_words):
             m = date_pat.match(w['text'])
             if m and i > 0 and all_words[i-1]['text'].endswith('.'):
                 day_x  = (all_words[i-1]['x0'] + w['x1']) / 2
-                month, day = int(m.group(2)), int(m.group(1))
+                month, day_n = int(m.group(2)), int(m.group(1))
                 try:
-                    from datetime import date as _d
-                    d = _d(target_date.year, month, day)
+                    from datetime import date as _d2
+                    d = _d2(target_date.year, month, day_n)
                     day_cols[str(d)] = day_x
                 except Exception:
                     pass
 
         if str(target_date) not in day_cols:
-            return []
+            return [], 0
 
-        target_x = day_cols[str(target_date)]
+        target_x  = day_cols[str(target_date)]
         xs        = sorted(day_cols.values())
         idx       = xs.index(target_x)
         col_left  = (xs[idx-1] + xs[idx]) / 2 if idx > 0 else 0
         col_right = (xs[idx] + xs[idx+1]) / 2 if idx < len(xs)-1 else 9999
 
-        time_re  = re.compile(r'^(\d{2}):(\d{2})$')
-        raw_times = sorted([(w['abs_top'], w['text']) for w in all_words
-                             if w['x0'] < 50 and time_re.match(w['text'])],
-                            key=lambda x: x[0])
-        seen_y, time_slots = set(), []
-        for y, t in raw_times:
-            if round(y) not in seen_y:
-                seen_y.add(round(y)); time_slots.append((y, t))
-
-        def get_time(y):
-            slot = None
-            for ty, tt in time_slots:
-                if ty <= y + 5: slot = tt
-                else: break
-            return slot
-
+        # ── Code positions (for INF detection only) ──
         code_re    = re.compile(r'^[A-Z][A-Z0-9_]{2,9}$')
-        ep_re      = re.compile(r'^\d{1,4}$')
         codes_at_y = []
         for i, w in enumerate(all_words):
             if code_re.match(w['text']) and i+1 < len(all_words) and all_words[i+1]['text'] == '(-)':
-                cx = (w['x0'] + w['x1']) / 2
-                codes_at_y.append((w['abs_top'], cx, w['text']))
+                codes_at_y.append((w['abs_top'], (w['x0']+w['x1'])/2, w['text']))
 
-        col_eps = sorted(
-            [(w['abs_top'], int(w['text']), (w['x0']+w['x1'])/2)
+        # ── Collect raw episode tokens in column ──
+        ep_re  = re.compile(r'^\d{1,4}$')
+        raw_eps = sorted(
+            [{'y': w['abs_top'], 'text': w['text'],
+              'x0': w['x0'], 'x1': w['x1'],
+              'cx': (w['x0']+w['x1'])/2}
              for w in all_words
-             if col_left <= (w['x0']+w['x1'])/2 <= col_right and ep_re.match(w['text'])],
-            key=lambda x: x[0])
+             if col_left <= (w['x0']+w['x1'])/2 <= col_right
+             and ep_re.match(w['text'])],
+            key=lambda w: (w['y'], w['x0']))
 
-        entries    = []
-        prev_code, prev_ts = None, None
-        for ep_y, ep_num, ep_cx in col_eps:
-            cands = [(abs(ep_cx - cx), code) for cy, cx, code in codes_at_y if 0 <= ep_y - cy < 40]
-            code  = sorted(cands)[0][1] if cands else '?'
-            ts    = get_time(ep_y)
-            if code == prev_code and ts == prev_ts:
+        # ── Merge adjacent digit tokens at same y (fixes split numbers e.g. "1"+"3"→"13") ──
+        merged = []
+        i = 0
+        while i < len(raw_eps):
+            w     = raw_eps[i]
+            group = [w]
+            j     = i + 1
+            while j < len(raw_eps):
+                nw = raw_eps[j]
+                if abs(nw['y'] - w['y']) < 2 and nw['x0'] - group[-1]['x1'] < 15:
+                    group.append(nw); j += 1
+                else:
+                    break
+            merged.append({'y': w['y'],
+                           'text': ''.join(g['text'] for g in group),
+                           'cx': (w['x0'] + group[-1]['x1']) / 2})
+            i = j
+
+        # ── Assign INF flag using vertical-distance-first code matching ──
+        show_eps, inf_count = [], 0
+        prev_ep, prev_is_inf = None, None
+        for mw in merged:
+            if not ep_re.match(mw['text']): continue
+            try: ep_num = int(mw['text'])
+            except: continue
+            ep_y, ep_cx = mw['y'], mw['cx']
+            cands = [(ep_y - cy, abs(ep_cx - cx), code)
+                     for cy, cx, code in codes_at_y if 0 <= ep_y - cy < 40]
+            if not cands: continue
+            code   = sorted(cands)[0][2]
+            is_inf = code.rstrip('_') == 'INF'
+            if ep_num == prev_ep and is_inf == prev_is_inf:
                 continue
-            prev_code, prev_ts = code, ts
-            code_clean = code.rstrip('_')
-            is_inf = (code_clean == 'INF')
-            # Build H1T ref: pad to 3 digits if < 1000, keep 4 if >= 1000
-            ep_str  = str(ep_num) if ep_num >= 1000 else f'{ep_num:03d}'
-            h1t_ref = None if is_inf else f'H1T{code_clean}{ep_str}'
-            # ET → UTC
-            exp_utc = None
-            if ts:
-                try:
-                    h, m = map(int, ts.split(':'))
-                    et_dt = datetime(target_date.year, target_date.month, target_date.day, h, m)
-                    if h < 6: et_dt += timedelta(days=1)
-                    exp_utc = _holatv_et_to_utc(et_dt)
-                except Exception:
-                    pass
-            entries.append({'code': code, 'episode': ep_num, 'time_slot': ts,
-                            'h1t_ref': h1t_ref, 'expected_utc': exp_utc, 'is_inf': is_inf})
-        return entries
-    except Exception:
-        return []
+            prev_ep, prev_is_inf = ep_num, is_inf
+            if is_inf:
+                inf_count += 1
+            else:
+                show_eps.append(ep_num)
+        return show_eps, inf_count
 
+    except Exception:
+        return [], 0
 
 def check_holatv_programs_v2(grilla_entries, log_blocks, current_start_utc, lang):
     """
-    LCS walk: compares non-INF grilla entries to non-HPP log blocks.
-    INF grilla entries verified separately (any HPP block at that time ±60min).
+    Episode-number-only program check for HolaTV.
+    grilla_entries: (show_eps list, inf_count) from parse_grilla_holatv_v2
+    Compares grilla episode sequence vs log block episode sequence by position.
+    INF/HPP: counter-based only.
     """
-    if not grilla_entries:
-        return [f'  ℹ  {"No grilla provided" if lang=="en" else "Sin grilla proporcionada"}']
+    # Unpack grilla — supports both old dict-list format and new (eps, inf_count) tuple
+    if isinstance(grilla_entries, tuple):
+        grilla_show_eps, grilla_inf_count = grilla_entries
+    else:
+        # Legacy dict list — extract eps and inf count
+        grilla_show_eps = [g['episode'] for g in grilla_entries if not g.get('is_inf')]
+        grilla_inf_count = sum(1 for g in grilla_entries if g.get('is_inf'))
 
-    active_blocks = [b for b in log_blocks
-                     if not current_start_utc or not b['start_utc']
-                     or b['start_utc'] >= current_start_utc]
-    if not active_blocks:
-        return [f'  ℹ  {"No log data" if lang=="en" else "Sin datos de log"}']
+    if not grilla_show_eps and grilla_inf_count == 0:
+        return [f'  \u2139  {"No grilla provided" if lang=="en" else "Sin grilla proporcionada"}']
 
-    # Separate INF and real shows
-    grilla_shows = [g for g in grilla_entries if not g['is_inf']]
-    grilla_inf   = [g for g in grilla_entries if g['is_inf']]
-    log_shows    = [b for b in active_blocks if not b['is_hpp']]
-    log_hpp      = [b for b in active_blocks if b['is_hpp']]
+    # Filter log to window
+    active = [b for b in log_blocks
+              if not current_start_utc or not b['start_utc']
+              or b['start_utc'] >= current_start_utc]
+    log_shows = [b for b in active if not b['is_hpp']]
+    log_hpp   = [b for b in active if b['is_hpp']]
+
+    if not log_shows and not log_hpp:
+        return [f'  \u2139  {"No log data in window" if lang=="en" else "Sin datos de log en la ventana"}']
+
+    def ep_from_id(base_id):
+        m = re.search(r'(\d+)$', base_id)
+        return int(m.group(1)) if m else None
 
     issues = []
-    WINDOW = 8
 
-    # ── LCS walk: real shows ──
-    gi, bi = 0, 0
-    while gi < len(grilla_shows) and bi < len(log_shows):
-        g = grilla_shows[gi]
-        b = log_shows[bi]
-
-        if g['h1t_ref'] == b['base_id']:
-            gi += 1; bi += 1; continue
-
-        future_b = [log_shows[bi+k]['base_id'] for k in range(1, min(WINDOW+1, len(log_shows)-bi))]
-        future_g = [grilla_shows[gi+k]['h1t_ref'] for k in range(1, min(WINDOW+1, len(grilla_shows)-gi))]
-
-        g_in_future_b = g['h1t_ref'] in future_b
-        b_in_future_g = b['base_id'] in [x for x in future_g if x]
-
-        if not g_in_future_b and not b_in_future_g:
-            del_lbl = 'DELETED' if lang=='en' else 'ELIMINADO'
-            add_lbl = 'ADDED'   if lang=='en' else 'AGREGADO'
-            _g_desc = g["h1t_ref"] or f'{g["code"]} ep{g["episode"]}'
-            issues.append(f'  ↔  {del_lbl}: {_g_desc} / {add_lbl}: {b["base_id"]} @ {fmt_t(b["start_utc"])}')
-            gi += 1; bi += 1
-        elif not g_in_future_b:
-            not_lbl = 'NOT IN LOG' if lang=='en' else 'NO EN LOG'
-            _g_desc = g["h1t_ref"] or f'{g["code"]} ep{g["episode"]}'
-            issues.append(f'  ✗  {not_lbl}: {_g_desc} @ {g["time_slot"]}')
-            gi += 1
-        elif not b_in_future_g:
-            ext_lbl = 'EXTRA IN LOG' if lang=='en' else 'EXTRA EN LOG'
-            issues.append(f'  ✗  {ext_lbl}: {b["base_id"]} @ {fmt_t(b["start_utc"])}')
-            bi += 1
+    # ── Show episode comparison (position-by-position) ──
+    n = min(len(grilla_show_eps), len(log_shows))
+    ok_count = 0
+    for i in range(n):
+        g_ep = grilla_show_eps[i]
+        b    = log_shows[i]
+        l_ep = ep_from_id(b['base_id'])
+        if g_ep == l_ep:
+            ok_count += 1
         else:
-            bl_offset = future_b.index(g['h1t_ref']) + 1
-            future_g_clean = [x for x in future_g if x]
-            gr_offset = future_g_clean.index(b['base_id']) + 1 if b['base_id'] in future_g_clean else WINDOW
-            if bl_offset <= gr_offset:
-                for k in range(bl_offset):
-                    ext_lbl = 'EXTRA IN LOG' if lang=='en' else 'EXTRA EN LOG'
-                    issues.append(f'  ✗  {ext_lbl}: {log_shows[bi+k]["base_id"]} @ {fmt_t(log_shows[bi+k]["start_utc"])}')
-                bi += bl_offset
-            else:
-                for k in range(gr_offset):
-                    not_lbl = 'NOT IN LOG' if lang=='en' else 'NO EN LOG'
-                    issues.append(f'  ✗  {not_lbl}: {grilla_shows[gi+k]["code"]} ep{grilla_shows[gi+k]["episode"]} @ {grilla_shows[gi+k]["time_slot"]}')
-                gi += gr_offset
+            warn = 'MANUAL CHECK' if lang=='en' else 'REVISIÓN MANUAL'
+            issues.append(
+                f'  \u26a0  {warn}: grilla ep{g_ep} \u2260 log {b["base_id"]} (ep{l_ep}) @ {fmt_t(b["start_utc"])}')
 
-    while gi < len(grilla_shows):
+    # Extra grilla entries not in log
+    for i in range(n, len(grilla_show_eps)):
         not_lbl = 'NOT IN LOG' if lang=='en' else 'NO EN LOG'
-        _g_desc = grilla_shows[gi]["h1t_ref"] or f'{grilla_shows[gi]["code"]} ep{grilla_shows[gi]["episode"]}'
-        issues.append(f'  ✗  {not_lbl}: {_g_desc} @ {grilla_shows[gi]["time_slot"]}')
-        gi += 1
-    while bi < len(log_shows):
+        issues.append(f'  \u2717  {not_lbl}: grilla ep{grilla_show_eps[i]}')
+
+    # Extra log entries not in grilla
+    for i in range(n, len(log_shows)):
+        b = log_shows[i]
         ext_lbl = 'EXTRA IN LOG' if lang=='en' else 'EXTRA EN LOG'
-        issues.append(f'  ✗  {ext_lbl}: {log_shows[bi]["base_id"]} @ {fmt_t(log_shows[bi]["start_utc"])}')
-        bi += 1
+        issues.append(f'  \u2717  {ext_lbl}: {b["base_id"]} @ {fmt_t(b["start_utc"])}')
 
-    # ── INF check: Counter-based — count INF slots in grilla vs HPP in log ──
-    if grilla_inf:
-        n_grilla_inf = len(grilla_inf)
-        n_log_hpp    = len(log_hpp)
-        inf_lbl = 'Infomercials' if lang=='en' else 'Infomerciales'
-        if n_grilla_inf == n_log_hpp:
-            issues.append(f'  ✓  {inf_lbl}: {n_grilla_inf} in grilla, {n_log_hpp} HPP in log — match')
-        else:
-            diff_inf = n_log_hpp - n_grilla_inf
-            sign = '+' if diff_inf > 0 else ''
-            issues.append(f'  ✗  {inf_lbl}: grilla={n_grilla_inf}, log={n_log_hpp} ({sign}{diff_inf})')
+    # ── INF / HPP counter ──
+    inf_lbl = 'Infomercials' if lang=='en' else 'Infomerciales'
+    if grilla_inf_count == len(log_hpp):
+        issues.append(f'  \u2713  {inf_lbl}: {grilla_inf_count} in grilla, {len(log_hpp)} HPP in log \u2014 match')
+    else:
+        diff = len(log_hpp) - grilla_inf_count
+        sign = '+' if diff > 0 else ''
+        issues.append(f'  \u2717  {inf_lbl}: grilla={grilla_inf_count}, log={len(log_hpp)} ({sign}{diff})')
 
-    if not any('✗' in i or '↔' in i for i in issues):
-        issues.append(f'  ✓  {"All shows match log" if lang=="en" else "Todos los programas coinciden con el log"}')
+    if not any('✗' in i or '⚠' in i for i in issues):
+        issues.insert(0, f'  \u2713  {"All" if lang=="en" else "Todos"} {ok_count} {"episodes match" if lang=="en" else "episodios coinciden"}')
+    else:
+        issues.insert(0, f'  \u2713 {ok_count} {"match" if lang=="en" else "coinciden"}  |  \u2757 {len([i for i in issues if "⚠" in i])} {"manual check" if lang=="en" else "revisión manual"}  |  \u2717 {len([i for i in issues if "✗" in i])} {"mismatch" if lang=="en" else "diferencia"}')
     return issues
-
 
 def check_holatv_timing_v2(grilla_entries, log_blocks, current_start_utc, lang, tolerance_secs=2700):
     """
@@ -2990,8 +2968,8 @@ def generate_report_holatv_v2(channel, log_rows, dx_count, cx_count,
     lines += check_holatv_programs_v2(grilla_entries, log_blocks, current_start_utc, lang)
     lines.append('')
 
-    lines.append(f'── [2] {"TIMING CHECK (±30min)" if lang=="en" else "VERIFICACIÓN TIMING (±30min)"} ──')
-    lines += check_holatv_timing_v2(grilla_entries, log_blocks, current_start_utc, lang)
+    lines.append(f'── [2] {"TIMING CHECK" if lang=="en" else "VERIFICACIÓN TIMING"} ──')
+    lines.append(f'  ℹ  {"Grilla times not used — log is source of truth." if lang=="en" else "Tiempos de grilla no usados — el log es la fuente."}')
     lines.append('')
 
     # Commercial check: HPP in log vs HPP in playlist
