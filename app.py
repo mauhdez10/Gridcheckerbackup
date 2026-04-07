@@ -394,15 +394,6 @@ if st.button(t('run'), type='primary', use_container_width=True):
             sony_by_code[code] += pairing_lines
 
     # ── BUILD FULL REPORT TEXT ────────────────────────────────────────────────
-    # Store results in session state so widget interactions don't re-run check
-    st.session_state['report_full_text']   = full_text
-    st.session_state['report_day_reports']  = day_reports
-    st.session_state['report_sorted_dates'] = sorted_dates
-    st.session_state['report_header_lines'] = header_lines
-    st.session_state['report_sony_date_ch'] = sony_date_ch
-    st.session_state['report_sony_by_code'] = sony_by_code
-    st.session_state['report_lang']          = lang
-
     st.subheader(t('report'))
     all_lines = header_lines[:]
     for d in sorted_dates:
@@ -413,6 +404,9 @@ if st.button(t('run'), type='primary', use_container_width=True):
         for code, lines in sorted(codes.items()):
             all_lines += lines
     full_text = '\n'.join(all_lines)
+
+    # Store in session state so NI expander doesn't re-trigger check
+    st.session_state['report_full_text'] = full_text
 
     # ── Manual review warnings
     if all_manual_warns:
