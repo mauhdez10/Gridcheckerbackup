@@ -2182,9 +2182,42 @@ def pick_grilla_for_date(grilla_list, target_date, channel):
             gf.seek(0)
             data = gf.read()
             gf.seek(0)
-            # PDF grilla — no date range to check, just return it
+            # PDF grilla — parse week range from filename
             if gf.name.lower().endswith('.pdf'):
-                return gf, None
+                _fname = gf.name.replace('_', ' ').upper()
+                _MES = {'ENE':1,'FEB':2,'MAR':3,'ABR':4,'MAY':5,'JUN':6,
+                        'JUL':7,'AGO':8,'SEP':9,'OCT':10,'NOV':11,'DIC':12}
+                _yr_m = re.search(r'(\d{4})', _fname)
+                _year = int(_yr_m.group(1)) if _yr_m else target_date.year
+                _months = [(m.start(), _MES[m.group()])
+                           for m in re.finditer(r'(ENE|FEB|MAR|ABR|MAY|JUN|JUL|AGO|SEP|OCT|NOV|DIC)', _fname)]
+                _nums   = [(m.start(), int(m.group()))
+                           for m in re.finditer(r'\d+', _fname) if 1 <= int(m.group()) <= 31]
+                _dates  = []
+                for _mpos, _mnum in _months:
+                    _before = [(p,n) for p,n in _nums if p < _mpos]
+                    if _before:
+                        _day = max(_before, key=lambda x: x[0])[1]
+                        try:
+                            from datetime import date as _d2
+                            _dates.append(_d2(_year, _mnum, _day))
+                        except Exception: pass
+                # Single-month file: grab smallest day too (start of week)
+                if len(_months) == 1 and len(_dates) == 1 and _months:
+                    _mpos, _mnum = _months[0]
+                    _before = [(p,n) for p,n in _nums if p < _mpos]
+                    if len(_before) >= 2:
+                        _all_days = sorted(set(n for _,n in _before))
+                        try:
+                            from datetime import date as _d2
+                            _dates.append(_d2(_year, _mnum, _all_days[0]))
+                        except Exception: pass
+                if len(_dates) >= 2:
+                    _s, _e = min(_dates), max(_dates)
+                    if _s <= target_date <= _e:
+                        gf.seek(0); return gf, None
+                    continue  # wrong week, try next
+                gf.seek(0); return gf, None  # can't determine range — use this one
             wb = load_workbook(io.BytesIO(data), read_only=True)
             if channel in ('latam', 'us', 'tn', 'hl'):
                 # Multi-tab: scan tabs for target_date
