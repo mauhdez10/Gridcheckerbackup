@@ -397,7 +397,7 @@ if st.button(t('run'), type='primary', use_container_width=True):
             sony_by_code[code] += pairing_lines
 
     # ── BUILD FULL REPORT TEXT ────────────────────────────────────────────────
-    st.subheader(t('report'))
+    st.session_state['_report_ready'] = True
     all_lines = header_lines[:]
     for d in sorted_dates:
         all_lines += day_reports.get(d, {}).get('all', [])
@@ -408,10 +408,31 @@ if st.button(t('run'), type='primary', use_container_width=True):
             all_lines += lines
     full_text = '\n'.join(all_lines)
 
-    # Store in session state so NI expander doesn't re-trigger check
-    st.session_state['report_full_text'] = full_text
+    # Store all report data in session state — survives widget interactions
+    st.session_state['report_full_text']    = full_text
+    st.session_state['report_day_reports']   = day_reports
+    st.session_state['report_sorted_dates']  = sorted_dates
+    st.session_state['report_header_lines']  = header_lines
+    st.session_state['report_sony_date_ch']  = sony_date_ch
+    st.session_state['report_sony_by_code']  = sony_by_code
+    st.session_state['report_all_warns']     = all_manual_warns
+    st.session_state['report_lang']          = lang
+
+
+# ── REPORT RENDER (outside button block — survives reruns) ──────────────────
+if st.session_state.get('_report_ready'):
+    full_text    = st.session_state.get('report_full_text', '')
+    day_reports  = st.session_state.get('report_day_reports', {})
+    sorted_dates = st.session_state.get('report_sorted_dates', [])
+    header_lines = st.session_state.get('report_header_lines', [])
+    sony_date_ch = st.session_state.get('report_sony_date_ch', {})
+    sony_by_code = st.session_state.get('report_sony_by_code', {})
+    lang         = st.session_state.get('report_lang', 'en')
+
+    st.subheader('📄 Report' if lang=='en' else '📄 Reporte')
 
     # ── Manual review warnings
+    all_manual_warns = st.session_state.get('report_all_warns', [])
     if all_manual_warns:
         warn_header = '⚠ MANUAL REVIEW NEEDED:' if lang == 'en' else '⚠ REVISIÓN MANUAL REQUERIDA:'
         warn_lines = [warn_header]
@@ -442,7 +463,7 @@ if st.button(t('run'), type='primary', use_container_width=True):
         # Build per-channel NI text from full report
         _ni_by_ch = {}
         _cur_ch = None
-        _ft = st.session_state.get('report_full_text', full_text)
+        _ft = full_text
         for _line in _ft.splitlines():
             if _line.startswith('CHANNEL:') or _line.startswith('CANAL:'):
                 _cur_ch = _line
@@ -474,16 +495,16 @@ if st.button(t('run'), type='primary', use_container_width=True):
     # Build tab structure: All + per-date (regular + Sony mixed) + dedicated Sony tabs
     CH_DISPLAY2 = {**CH_DISPLAY,
                    **{code: f'{code} {SONY_EMOJI.get(code,"📺")} {SONY_CHANNEL_MAP.get(code,code)}'
-                      for code in sony_by_code}}
+                      for code in st.session_state.get('report_sony_by_code',{})}}
 
     # Merge Sony channels into date reports for unified date tabs
     all_tab_dates = sorted(set(list(sorted_dates) + list(sony_date_ch.keys())))
 
     def _render_day_tab(date_str, key_prefix):
-        day_data   = day_reports.get(date_str, {})
+        day_data   = st.session_state.get('report_day_reports',"").get(date_str, {})
         ch_reports = dict(day_data.get('channels', {}))
         # Add Sony channels for this date
-        sony_for_date = sony_date_ch.get(date_str, {})
+        sony_for_date = st.session_state.get('report_sony_date_ch',{}).get(date_str, {})
         for code, lines in sorted(sony_for_date.items()):
             ch_reports[code] = lines
         day_text = '\n'.join(header_lines + day_data.get('all', []) +
@@ -516,7 +537,7 @@ if st.button(t('run'), type='primary', use_container_width=True):
         with tabs[0]:
             st.text(full_text)
             dl_lbl = '⬇ Full Report (.txt)' if lang=='en' else '⬇ Reporte Completo (.txt)'
-            st.download_button(dl_lbl, full_text,
+            st.download_button(dl_lbl, st.session_state.get('report_full_text',""),
                                file_name=f'report_all_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt',
                                mime='text/plain', use_container_width=True, key='dl_all')
 
@@ -527,6 +548,6 @@ if st.button(t('run'), type='primary', use_container_width=True):
     else:
         st.text(full_text)
         dl_lbl3 = '⬇ Full Report (.txt)' if lang=='en' else '⬇ Reporte Completo (.txt)'
-        st.download_button(dl_lbl3, full_text,
+        st.download_button(dl_lbl3, st.session_state.get('report_full_text',""),
                            file_name=f'report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt',
                            mime='text/plain', use_container_width=True, key='dl_single_all')

@@ -168,7 +168,12 @@ def parse_json_playlist(data):
         for b in behaviors:
             if b.get('name') == 'CUEON' and not b.get('disabled', True):
                 ct = ev_assets[0].get('reference', ev_name) if ev_assets else ev_name
-                cue_tones.append({'ref': ev_ref, 'name': ev_name, 'ct_id': ct, 'start': ev_start})
+                cue_tones.append({'ref': ev_ref, 'name': ev_name, 'ct_id': ct,
+                                  'start': ev_start, 'duration': ev_dur, 'is_cueoff': False})
+            if b.get('name') == 'CUEOFF' and not b.get('disabled', True):
+                ct = ev_assets[0].get('reference', ev_name) if ev_assets else ev_name
+                cue_tones.append({'ref': ev_ref, 'name': ev_name, 'ct_id': ct,
+                                  'start': ev_start, 'duration': ev_dur, 'is_cueoff': True})
 
         for asset in ev_assets:
             atype = asset.get('type', '')
@@ -190,7 +195,7 @@ def parse_json_playlist(data):
                 ep_id = normalize_id(aref)
                 _logo = next((b.get('params',{}).get('Command')
                               for b in behaviors
-                              if b.get('name')=='LOGOHD' and not b.get('disabled',False)), None)
+                              if b.get('name') in ('LOGOHD','LOGOHD_ANI') and not b.get('disabled',False)), None)
                 programs.append({'episode_id': ep_id, 'episode_id_raw': aref,
                                   'seg_num': seg, 'start': ev_start, 'duration': ev_dur,
                                   'name': ev_name, 'ref': ev_ref, 'asset_type': atype,
@@ -1264,8 +1269,16 @@ def check_bugs(playlist, current_start=None, lang='en'):
 
     lines = []
     for logo, t_start, t_end, grp in groups:
-        s = fmt_t(t_start) if t_start else '?'
-        e = fmt_t(t_end)   if t_end   else ('end of day' if lang=='en' else 'fin del día')
+        def _round_min(dt):
+            if not dt: return None
+            from datetime import timedelta as _td
+            sec = dt.second + dt.microsecond/1e6
+            rounded = dt.replace(second=0, microsecond=0) + (_td(minutes=1) if sec >= 30 else _td(0))
+            return rounded
+        t_start_r = _round_min(t_start)
+        t_end_r   = _round_min(t_end)
+        s = fmt_t(t_start_r) if t_start_r else '?'
+        e = fmt_t(t_end_r)   if t_end_r   else ('end of day' if lang=='en' else 'fin del día')
         lines.append(f'  {logo}  :  {s} → {e}')
     return lines
 
@@ -1273,60 +1286,68 @@ def check_bugs(playlist, current_start=None, lang='en'):
 def check_cue_tones(playlist, lang='en'):
     """
     Cue tone report.
-    CUE ON = trigger (its duration not counted).
-    Clips after CUE ON up to and including CUE OFF = cue block.
-    Duration computed using consecutive promo start-time gaps.
+    Sequence: CUE ON clip (ignored) → clip(s) → CUE OFF clip (included).
+    Duration = sum of all clips strictly after CUE ON up to and including CUE OFF.
+    Uses ev_dur stored on each event; clips computed from sorted cue_tones list.
     """
-    cts = playlist.get('cue_tones', [])
-    if not cts:
+    all_cts = sorted(playlist.get('cue_tones', []), key=lambda c: c['start'] or datetime.min)
+    cue_ons  = [c for c in all_cts if not c.get('is_cueoff')]
+    cue_offs = [c for c in all_cts if c.get('is_cueoff')]
+
+    if not cue_ons:
         return [f"  \u2714  No cue tones found" if lang=='en' else "  \u2714  Sin cue tones"]
 
+    # Also get all promos sorted for duration lookup using gaps
     all_promos = sorted(playlist.get('promos', []), key=lambda p: p['start'] or datetime.min)
-    if not all_promos:
-        return [f"  \u2139  {len(cts)} CUE ON found — no promo list to compute durations"]
-
-    # Build start_time -> duration map using consecutive gaps
-    promo_durs = {}
+    promo_gap_dur = {}
     for i, p in enumerate(all_promos):
         if p['start']:
-            if i + 1 < len(all_promos) and all_promos[i+1]['start']:
-                promo_durs[p['start']] = int((all_promos[i+1]['start'] - p['start']).total_seconds())
+            if i+1 < len(all_promos) and all_promos[i+1]['start']:
+                promo_gap_dur[p['start']] = int((all_promos[i+1]['start'] - p['start']).total_seconds())
             else:
-                promo_durs[p['start']] = 30  # last promo default
+                promo_gap_dur[p['start']] = p.get('duration', 30) or 30
 
     from collections import defaultdict
     stats = defaultdict(lambda: {'count': 0, 'first': None, 'last_dur': 0})
+    total_dur = 0
 
-    sorted_cts = sorted(cts, key=lambda c: c['start'] or datetime.min)
-    cue_blocks = []
-
-    for i, ct in enumerate(sorted_cts):
-        ref  = ct['ct_id']
-        t_on = ct['start']
+    for ct_on in cue_ons:
+        ref   = ct_on['ct_id']
+        t_on  = ct_on['start']
         if not t_on: continue
-        t_next = sorted_cts[i+1]['start'] if i+1 < len(sorted_cts) else None
 
-        # Sum durations of promos AFTER t_on until next CUE ON
-        block_dur = sum(
-            promo_durs.get(p['start'], 0)
-            for p in all_promos
-            if p['start'] and p['start'] > t_on
-            and (t_next is None or p['start'] < t_next)
-        )
-        cue_blocks.append({'ref': ref, 'start': t_on, 'dur': block_dur})
+        # Find the next CUE OFF after this CUE ON
+        t_off = next((c['start'] for c in cue_offs if c['start'] and c['start'] > t_on), None)
+
+        if t_off:
+            # Sum durations of all promos strictly between t_on and t_off (inclusive of t_off promo)
+            block_dur = sum(
+                promo_gap_dur.get(p['start'], p.get('duration', 30) or 30)
+                for p in all_promos
+                if p['start'] and p['start'] > t_on and p['start'] <= t_off
+            )
+        else:
+            # No CUE OFF found — use next CUE ON as boundary
+            next_on = next((c['start'] for c in cue_ons if c['start'] and c['start'] > t_on), None)
+            block_dur = sum(
+                promo_gap_dur.get(p['start'], p.get('duration', 30) or 30)
+                for p in all_promos
+                if p['start'] and p['start'] > t_on and (next_on is None or p['start'] < next_on)
+            )
+
+        block_dur = min(block_dur, 240)  # cap at 4 min
+        total_dur += block_dur
+
         stats[ref]['count'] += 1
-        stats[ref]['last_dur'] = min(block_dur, 240)
+        stats[ref]['last_dur'] = block_dur
         if stats[ref]['first'] is None or t_on < stats[ref]['first']:
             stats[ref]['first'] = t_on
-
-    total_count = len(sorted_cts)
-    total_dur   = sum(min(b['dur'], 240) for b in cue_blocks)
 
     def fmt_dur(secs):
         m, s = divmod(int(secs), 60)
         return f'{m}min {s:02d}sec'
 
-    lines = [f"  Total CUE ON: {total_count} | Total duration: {fmt_dur(total_dur)}"]
+    lines = [f"  Total CUE ON: {len(cue_ons)} | Total duration: {fmt_dur(total_dur)}"]
     for ref in sorted(stats):
         s = stats[ref]
         first_str = s['first'].strftime('%H:%M:%S') if s['first'] else '?'
