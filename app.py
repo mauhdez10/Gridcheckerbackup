@@ -1,588 +1,223 @@
 """
-Broadcast Playlist Checker — Streamlit App v6
+Broadcast Time Calculator — Page 1
+Functions: Segment Adder | End Break Calculator | Segment Calculator
 """
 import streamlit as st
-import json
-from datetime import datetime
-import os, sys
-sys.path.insert(0, os.path.dirname(__file__))
-from checker import (
-    parse_json_playlist, parse_xml_log, parse_xml_log_tn, parse_grilla,
-    generate_report, check_promo_repeats, detect_files,
-    parse_sony_xml_log, check_sony, pair_sony_files, SONY_CHANNEL_MAP,
-    parse_sony_json_markers, split_sony_json_by_markers, get_sony_last_program,
-    load_holatv_log, group_holatv_blocks, parse_grilla_holatv_v2,
-    generate_report_holatv_v2, pick_grilla_for_date,
-)
+from datetime import datetime, timedelta
+import re
 
-APP_VERSION = "v30.5"
+st.set_page_config(page_title='Time Calculator', layout='wide', page_icon='⏱')
 
-st.set_page_config(page_title='Broadcast Playlist Checker', layout='wide')
-
-SONY_EMOJI = {
-    'A1':'🅰️','A2':'🅰️','A3':'🅰️','A4':'🅰️','A5':'🅰️','A6':'🅰️',
-    'F1':'🎬','F4':'🎬',
-    'S1':'📡','S2':'📡','S3':'📡','S4':'📡','S5':'📡','S6':'📡',
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@300;400;600&display=swap');
+:root {
+  --bg:#0e1117;--surface:#1a1d26;--surface2:#22263a;
+  --accent:#00d4ff;--accent2:#ff6b35;--accent3:#7fff6b;
+  --text:#e8ecf0;--muted:#6b7280;--border:#2d3148;
 }
-SONY_L = {
-    'markers_hdr':  {'en': '── [1] MARKERS ──',                    'es': '── [1] MARCADORES ──'},
-    'no_marker':    {'en': '  ℹ  No markers found (partial/current playlist)', 'es': '  ℹ  Sin marcadores (playlist parcial/actual)'},
-    'log_hdr':      {'en': '── [2] LOG FILE MATCH ──',             'es': '── [2] VERIFICACIÓN DE ARCHIVO LOG ──'},
-    'ep_hdr':       {'en': '── [3] ENDPOINT CHECK ──',             'es': '── [3] VERIFICACIÓN DE PUNTO FINAL ──'},
-    'seg_hdr':      {'en': '── [4] SEGMENT TIMING CHECK (≤5s tolerance) ──', 'es': '── [4] VERIFICACIÓN DE TIEMPOS (tolerancia ≤5s) ──'},
-    'pl_full':      {'en': 'FULL (marker present)',                 'es': 'COMPLETO (marcador presente)'},
-    'pl_partial':   {'en': 'CURRENT (partial)',                     'es': 'ACTUAL (parcial)'},
-    'pl_none':      {'en': '— no JSON —',                          'es': '— sin JSON —'},
-    'no_json':      {'en': '  ℹ  Log provided but no matching JSON found', 'es': '  ℹ  Log provisto pero sin JSON correspondiente'},
-    'no_log':       {'en': '  ℹ  JSON found but no matching log provided', 'es': '  ℹ  JSON encontrado pero sin log correspondiente'},
-}
-def SL(key, lang): return SONY_L.get(key, {}).get(lang, SONY_L.get(key, {}).get('en', key))
+html,body,.stApp{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-serif;}
+h1,h2,h3{font-family:'JetBrains Mono',monospace;letter-spacing:-0.5px;}
+.stButton>button{background:var(--surface2);border:1px solid var(--border);color:var(--accent);
+  font-family:'JetBrains Mono',monospace;border-radius:4px;font-size:0.8rem;
+  letter-spacing:1px;text-transform:uppercase;transition:all 0.15s;}
+.stButton>button:hover{background:var(--accent);color:var(--bg);border-color:var(--accent);}
+.result-box{background:var(--surface);border:1px solid var(--accent);border-radius:6px;padding:14px 18px;margin:8px 0;font-family:'JetBrains Mono',monospace;}
+.result-big{font-size:1.6rem;font-weight:700;color:var(--accent);}
+.result-sub{font-size:0.85rem;color:var(--muted);margin-top:4px;}
+.section-header{border-bottom:1px solid var(--border);padding-bottom:8px;margin-bottom:16px;
+  font-family:'JetBrains Mono',monospace;font-size:0.75rem;letter-spacing:2px;text-transform:uppercase;color:var(--muted);}
+.tc-badge{display:inline-block;background:var(--surface2);border:1px solid var(--border);
+  padding:4px 10px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:0.9rem;color:var(--accent3);}
+</style>
+""", unsafe_allow_html=True)
 
-# ── LANGUAGE ──────────────────────────────────────────────────────────────────
-lang = st.radio('🌐', ['English', 'Español'], horizontal=True, label_visibility='collapsed')
-lang = 'es' if lang == 'Español' else 'en'
+FPS = 29.97
 
-L = {
-    'title':    {'en': '📋 Broadcast Playlist Checker',             'es': '📋 Verificador de Playlist'},
-    'upload':   {'en': 'Drop all files here — auto-detected (JSON, XML, XLSX)', 'es': 'Arrastra archivos aquí — detección automática (JSON, XML, XLSX)'},
-    'run':      {'en': '▶  Run Check',                              'es': '▶  Verificar'},
-    'dl':       {'en': '⬇ Download Report (.txt)',                  'es': '⬇ Descargar Reporte (.txt)'},
-    'detected': {'en': '**Detected files:**',                       'es': '**Archivos detectados:**'},
-    'unknown':  {'en': '⚠ Unrecognized:',                          'es': '⚠ No reconocidos:'},
-    'hint':     {'en': 'JSON → promo check  |  +XML → commercial check  |  +Grilla → program check',
-                 'es': 'JSON → promos  |  +XML → comerciales  |  +Grilla → programas'},
-    'channels': {'en': 'Channels to check:',                        'es': 'Canales a verificar:'},
-    'tab_all':  {'en': '📋 All',                                    'es': '📋 Todo'},
-    'no_json':  {'en': 'Upload at least one Vipe JSON.',            'es': 'Sube al menos un JSON de Vipe.'},
-    'report':   {'en': '📄 Report',                                 'es': '📄 Reporte'},
-    'running':  {'en': 'Running checks...',                         'es': 'Verificando...'},
-}
-def t(k): return L[k][lang]
+def tc_to_secs(tc_str):
+    tc_str = tc_str.strip()
+    m = re.match(r'^(\d+):(\d+):(\d+)[;:](\d+)$', tc_str)
+    if m:
+        h,mi,s,f = int(m.group(1)),int(m.group(2)),int(m.group(3)),int(m.group(4))
+        return h*3600 + mi*60 + s + f/FPS
+    m = re.match(r'^(\d+):(\d+):(\d+)$', tc_str)
+    if m:
+        h,mi,s = int(m.group(1)),int(m.group(2)),int(m.group(3))
+        return h*3600 + mi*60 + s
+    m = re.match(r'^(\d+):(\d+)$', tc_str)
+    if m:
+        mi,s = int(m.group(1)),int(m.group(2))
+        return mi*60 + s
+    return None
 
-# ── GLOBAL DISPLAY MAPS (needed in render block outside button) ─────────
-CH_DISPLAY = {'catv':'CATV 🌎','tvd':'TVD 📺','latam':'Pasiones Latam 🌹',
-              'us':'Pasiones US ⭐','tn':'Fast Todonovelas 📺',
-              'hu':'Hola TV US 🤝','hl':'Hola TV Latam 🌍'}
+def secs_to_tc(total_secs, with_frames=True):
+    total_secs = max(0, float(total_secs))
+    frames = round((total_secs % 1) * FPS)
+    if frames >= 30: frames = 29
+    total_int = int(total_secs)
+    h  = total_int // 3600
+    mi = (total_int % 3600) // 60
+    s  = total_int % 60
+    if with_frames: return f'{h:02d}:{mi:02d}:{s:02d};{frames:02d}'
+    return f'{h:02d}:{mi:02d}:{s:02d}'
 
-col_title, col_copy = st.columns([3, 1])
-with col_title:
-    st.title(t('title'))
-with col_copy:
-    st.markdown(
-        f'<div style="text-align:right;padding-top:16px;">'
-        f'<span style="font-size:1.05rem;font-weight:700;color:#444;">© 2026 Mauricio Hernandez</span><br>'
-        f'<span style="font-size:0.85rem;color:#888;">{APP_VERSION}</span></div>',
-        unsafe_allow_html=True)
+def fmt_hms(secs, use_ampm):
+    tc = secs_to_tc(secs % 86400, with_frames=False)
+    if not use_ampm: return tc
+    h,m,s = map(int, tc.split(':'))
+    suffix = 'AM' if h < 12 else 'PM'
+    return f'{h%12 or 12}:{m:02d}:{s:02d} {suffix}'
 
-# ── UPLOAD ────────────────────────────────────────────────────────────────────
-if 'uploader_key' not in st.session_state: st.session_state.uploader_key = 0
+# ── Header ────────────────────────────────────────────────────────────────────
+st.markdown('# ⏱ BROADCAST TIME CALCULATOR')
+st.markdown('<div class="section-header">Segment Adder · End Break Calc · Segment Calculator</div>', unsafe_allow_html=True)
 
-up_col, clr_col = st.columns([5, 1])
-with up_col:
-    uploaded = st.file_uploader(t('upload'), accept_multiple_files=True, type=None,
-                                key=f'all_files_{st.session_state.uploader_key}')
-with clr_col:
-    st.write("")
-    if st.button("🗑 Clear files", use_container_width=True):
-        st.session_state.uploader_key += 1
-        st.session_state.pop('_report_ready', None)
-        st.session_state.pop('report_full_text', None)
+col_tz, col_fmt, col_off = st.columns(3)
+with col_tz:   tz_choice = st.selectbox('Timezone display', ['ET (Eastern)', 'UTC only'])
+with col_fmt:  time_fmt  = st.selectbox('Time format', ['Military (24h)', 'AM/PM'])
+with col_off:  et_offset = st.number_input('UTC offset hrs', value=-4, min_value=-12, max_value=14, help='EDT=-4  EST=-5')
+use_ampm = time_fmt == 'AM/PM'
+show_et  = 'ET' in tz_choice
+
+st.divider()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FUNCTION 1 — SEGMENT ADDER
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown('## 01 — SEGMENT ADDER')
+st.caption('Enter segment durations in HH:MM:SS;FF · 29.97fps · Total shown as timecode')
+
+if 'seg_rows' not in st.session_state:
+    st.session_state.seg_rows = [{'label': f'Segment {i+1}', 'tc': ''} for i in range(3)]
+
+ca, cb = st.columns([1, 1])
+with ca:
+    if st.button('＋ Add segment'):
+        n = len(st.session_state.seg_rows) + 1
+        st.session_state.seg_rows.append({'label': f'Segment {n}', 'tc': ''})
         st.rerun()
-result = detect_files(uploaded) if uploaded else ({}, {}, [], [])
-days, grillas, unknown_files, sony_files_raw = result
+with cb:
+    if st.button('✕ Clear all'):
+        st.session_state.seg_rows = [{'label': f'Segment {i+1}', 'tc': ''} for i in range(3)]
+        st.rerun()
 
-# ── DETECTION TABLE ───────────────────────────────────────────────────────────
-# Count detected vs total
-total_uploaded = len(uploaded) if uploaded else 0
-total_detected = 0
-if uploaded:
-    total_detected = (
-        sum(len(info['json']) + (1 if info.get('xml') else 0)
-            for info in days.values())
-        + sum(len(gl) if isinstance(gl, list) else 1 for gl in grillas.values())
-        + len(sony_files_raw)
-    )
+total_secs = 0.0
+valid_count = 0
+to_delete = None
 
-if uploaded:
-    st.markdown(f"**{'Detected files' if lang=='en' else 'Archivos detectados'}: {total_detected} / {total_uploaded} uploaded**")
-    CH_DISPLAY = {'catv':'CATV 🌎','tvd':'TVD 📺','latam':'Pasiones Latam 🌹',
-                  'hu':'Hola TV US 🤝','hl':'Hola TV Latam 🌍',
-                  'us':'Pasiones US ⭐','tn':'Fast Todonovelas 📺'}
-    rows = []
-    for (date_str, channel), info in sorted(days.items()):
-        ch = CH_DISPLAY.get(channel, channel.upper())
-        try:
-            from datetime import datetime as _dt
-            d = _dt.strptime(date_str, '%Y-%m-%d')
-            short_date = d.strftime('%m/%d')
-        except: short_date = date_str
-        for jf in info['json']:
-            rows.append({'Date': date_str, 'Channel': ch,
-                         'Type': f'Playlist {short_date}', 'File': jf.name})
-        if info['xml']:
-            rows.append({'Date': date_str, 'Channel': ch,
-                         'Type': f'Log {short_date}', 'File': info['xml'].name})
+for idx, row in enumerate(st.session_state.seg_rows):
+    c1, c2, c3, c4 = st.columns([2, 2, 1.5, 0.5])
+    with c1:
+        lbl = st.text_input('Label', value=row['label'], key=f'lbl_{idx}', label_visibility='collapsed', placeholder=f'Segment {idx+1}')
+        st.session_state.seg_rows[idx]['label'] = lbl
+    with c2:
+        tc_val = st.text_input('TC', value=row['tc'], key=f'tc_{idx}', label_visibility='collapsed', placeholder='00:00:00;00')
+        st.session_state.seg_rows[idx]['tc'] = tc_val
+    with c3:
+        secs = tc_to_secs(tc_val) if tc_val.strip() else None
+        if secs is not None:
+            total_secs += secs; valid_count += 1
+            st.markdown(f'<span class="tc-badge">{secs_to_tc(secs)}</span>', unsafe_allow_html=True)
+        elif tc_val.strip():
+            st.markdown('⚠️ invalid')
+    with c4:
+        if st.button('🗑', key=f'del_{idx}'):
+            to_delete = idx
 
-    # For grillas, read the week-start Monday date from the file content
-    for ch_key, gf_list in grillas.items():
-        ch = CH_DISPLAY.get(ch_key, ch_key.upper())
-        if not isinstance(gf_list, list):
-            gf_list = [gf_list]
-        for gf in gf_list:
-            grilla_date_str = '(PDF)' if gf.name.lower().endswith('.pdf') else '(Week)'
-            if not gf.name.lower().endswith('.pdf'):
-                try:
-                    from openpyxl import load_workbook
-                    import io
-                    gf.seek(0)
-                    wb = load_workbook(io.BytesIO(gf.read()), read_only=True)
-                    gf.seek(0)
-                    ws = wb.active
-                    rows_g = list(ws.iter_rows(max_row=3, values_only=True))
-                    if len(rows_g) > 1:
-                        monday_val = rows_g[1][2] if len(rows_g[1]) > 2 else None
-                        if monday_val and hasattr(monday_val, 'strftime'):
-                            grilla_date_str = monday_val.strftime('%m/%d')
-                except: pass
-            grilla_label = f'{"Grilla" if lang=="es" else "Grid"} {grilla_date_str}'
-            rows.append({'Date': grilla_date_str, 'Channel': ch,
-                         'Type': grilla_label, 'File': gf.name})
-    for uf in unknown_files:
-        rows.append({'Date': '?', 'Channel': '?', 'Type': '?', 'File': uf.name})
-    # Sony files — use filename only, never pre-read (preserves file state for pairing)
-    for sf in sony_files_raw:
-        ch_name = SONY_CHANNEL_MAP.get(sf['code'], sf['code'])
-        ch_display = f'{sf["code"]} {SONY_EMOJI.get(sf["code"],"📺")} {ch_name}'
-        from checker import _date_from_xml_filename as _dxml
-        d = _dxml(sf['file'].name)
-        if sf['ftype'] == 'xml':
-            type_label = f'Log {d.strftime("%m/%d") if d else "?"}'
-            rows.append({'Date': str(d) if d else '?', 'Channel': ch_display,
-                         'Type': type_label, 'File': sf['file'].name})
-        else:
-            # Check for multi-day JSON by scanning for mid-file markers
-            try:
-                sf['file'].seek(0)
-                _jdata = json.load(sf['file'])
-                sf['file'].seek(0)
-                _segs = split_sony_json_by_markers(_jdata, sf['file'].name)
-            except Exception:
-                _segs = []
-                sf['file'].seek(0) if hasattr(sf['file'],'seek') else None
-            if len(_segs) > 1:
-                for _seg in _segs:
-                    _sd = _seg['date']
-                    _lbl = f'Multi-Day {_seg["label"]}'
-                    rows.append({'Date': str(_sd) if _sd else '?', 'Channel': ch_display,
-                                 'Type': _lbl, 'File': sf['file'].name})
-            else:
-                type_label = f'Playlist {d.strftime("%m/%d") if d else "?"}'
-                rows.append({'Date': str(d) if d else '?', 'Channel': ch_display,
-                             'Type': type_label, 'File': sf['file'].name})
-    if rows:
-        import pandas as pd
-        st.dataframe(pd.DataFrame(rows), use_container_width=True,
-                     hide_index=True, height=min(500, 35 + len(rows)*35))
-    if rows:
-        import pandas as pd
-        df = pd.DataFrame(rows)
-        n_dates    = df["Date"].nunique()
-        n_channels = df["Channel"].nunique()
-        n_types    = df["Type"].nunique()
-        n_files    = len(df)
-        st.caption(
-            f'Dates ({n_dates})  ·  Channels ({n_channels})  ·  '
-            f'Types ({n_types})  ·  Files ({n_files})')
-    st.caption(t('hint'))
-    st.divider()
+if to_delete is not None:
+    st.session_state.seg_rows.pop(to_delete); st.rerun()
 
-# ── CHANNEL SELECTOR ──────────────────────────────────────────────────────────
-# Build channel list including Sony codes
-available = sorted(set(ch for (_, ch) in days.keys()) | set(grillas.keys()))
-sony_codes_present = sorted(set(sf['code'] for sf in sony_files_raw))
-all_options = available + sony_codes_present
-CH_FORMAT = {'catv':'CATV','tvd':'TVD','latam':'Pasiones Latam',
-             'us':'Pasiones US','tn':'Fast Todonovelas',
-             'hu':'Hola TV US 🤝','hl':'Hola TV Latam 🌍'}
-CH_FORMAT.update({code: f'{code} {SONY_EMOJI.get(code,"📺")} {SONY_CHANNEL_MAP.get(code,code)}' for code in sony_codes_present})
+if valid_count > 0:
+    tc_result = secs_to_tc(total_secs)
+    utc_d = fmt_hms(total_secs % 86400, use_ampm)
+    et_d  = fmt_hms((total_secs + et_offset*3600) % 86400, use_ampm)
+    sub   = f'UTC: {utc_d}' + (f'  |  ET: {et_d}' if show_et else '') + f'  |  {valid_count} segments'
+    st.markdown(f'<div class="result-box"><div class="result-big">{tc_result}</div><div class="result-sub">{sub}</div></div>', unsafe_allow_html=True)
+    if st.button('📋 Copy total timecode'):
+        st.session_state['_tc_copy'] = tc_result
+    if st.session_state.get('_tc_copy'):
+        st.code(st.session_state['_tc_copy'])
+        st.caption('Select all and copy ↑')
 
-if all_options:
-    selected_all = st.multiselect(
-        t('channels'), options=all_options, default=all_options,
-        format_func=lambda x: CH_FORMAT.get(x, x)
-    )
+st.divider()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FUNCTION 2 — END BREAK CALCULATOR
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown('## 02 — END BREAK CALCULATOR')
+st.caption('Cue time = Out time − Break duration')
+
+c1, c2 = st.columns(2)
+with c1:
+    st.markdown('**Out time (end of live)**')
+    r1, r2, r3 = st.columns(3)
+    out_h = r1.number_input('H', 0, 23, 18, key='oh', format='%02d', label_visibility='collapsed')
+    out_m = r2.number_input('M', 0, 59, 0,  key='om', format='%02d', label_visibility='collapsed')
+    out_s = r3.number_input('S', 0, 59, 0,  key='os', format='%02d', label_visibility='collapsed')
+    r1.caption('Hour'); r2.caption('Min'); r3.caption('Sec')
+    out_tz = st.selectbox('Out time timezone', ['ET', 'UTC'], key='out_tz2')
+with c2:
+    st.markdown('**Break duration**')
+    b1, b2 = st.columns(2)
+    brk_m = b1.number_input('Minutes', 0, 59, 3, key='bm2')
+    brk_s = b2.number_input('Seconds', 0, 59, 45, key='bs2')
+
+out_secs = out_h*3600 + out_m*60 + out_s
+out_utc  = (out_secs - et_offset*3600) % 86400 if out_tz == 'ET' else out_secs % 86400
+brk_dur  = brk_m*60 + brk_s
+cue_utc  = (out_utc - brk_dur) % 86400
+cue_et   = (cue_utc + et_offset*3600) % 86400
+
+cue_utc_s = fmt_hms(cue_utc, use_ampm)
+cue_et_s  = fmt_hms(cue_et,  use_ampm)
+out_utc_s = fmt_hms(out_utc, use_ampm)
+out_et_s  = fmt_hms(out_utc + et_offset*3600, use_ampm)
+
+if show_et:
+    cue_main = f'{cue_et_s} ET  /  {cue_utc_s} UTC'
+    out_line = f'Out: {out_et_s} ET / {out_utc_s} UTC'
 else:
-    selected_all = []
-selected        = [x for x in selected_all if x in available]
-selected_sony   = [x for x in selected_all if x in sony_codes_present]
+    cue_main = f'{cue_utc_s} UTC'
+    out_line = f'Out: {out_utc_s} UTC'
 
-# ── RUN ───────────────────────────────────────────────────────────────────────
-if st.button(t('run'), type='primary', use_container_width=True):
-    if not days and not sony_files_raw:
-        st.error(t('no_json')); st.stop()
+st.markdown(f'<div class="result-box"><div style="color:var(--muted);font-size:0.8rem;margin-bottom:4px;">CUE TIME (leave segment)</div><div class="result-big">{cue_main}</div><div class="result-sub">{out_line}  −  Break {brk_m}m {brk_s:02d}s</div></div>', unsafe_allow_html=True)
 
-    CH_LABELS = {
-        'catv': 'CATV', 'tvd': 'TVD',
-        'latam': 'Pasiones Latam', 'us': 'Pasiones US',
-        'tn': 'Fast Todonovelas',
-        'hu': 'Hola TV US 🤝', 'hl': 'Hola TV Latam 🌍',
-    }
+st.divider()
 
-    def process_one(channel, json_file, xml_file, grilla_file):
-        is_tn  = (channel == 'tn')
-        lines  = []
-        file_info  = {
-            'json':   json_file.name  if json_file   else None,
-            'xml':    xml_file.name   if xml_file    else None,
-            'grilla': grilla_file.name if grilla_file else None,
-        }
-        try:
-            json_file.seek(0)
-            data     = json.load(json_file)
-            playlist = parse_json_playlist(data)
-        except Exception as e:
-            return [f'ERROR parsing JSON: {e}'], []
-        xml_rows = []
-        if xml_file:
-            try:
-                xml_file.seek(0)
-                xml_rows = parse_xml_log_tn(xml_file) if is_tn else parse_xml_log(xml_file)
-            except Exception as e:
-                lines.append(f'  WARNING: XML error: {e}')
-        grilla_ids = []
-        if grilla_file and playlist['date']:
-            try:
-                grilla_file.seek(0)
-                grilla_ids = parse_grilla(grilla_file, playlist['date'], channel)
-            except Exception as e:
-                lines.append(f'  WARNING: Grilla error: {e}')
-        if not xml_rows and not grilla_ids:
-            pi = check_promo_repeats(playlist, lang=lang)
-            ch_label = CH_LABELS.get(channel, channel.upper())
-            lines += ['═'*60,
-                      f'CHANNEL: {ch_label} | DATE: {playlist["date"]} | {"PROMO CHECK" if lang=="en" else "VERIFICACIÓN DE PROMOS"}',
-                      '═'*60]
-            lines += pi if pi else ['  ✓ No repeated promos']
-            lines.append('')
-            return lines, []
-        ch_label = CH_LABELS.get(channel, channel.upper())
-        try:
-            report_text, manual_warns = generate_report(
-                ch_label, playlist, xml_rows, grilla_ids, lang,
-                is_tn=is_tn, file_info=file_info)
-            lines.append(report_text)
-        except Exception as e:
-            lines.append(f'  ERROR generating report: {e}')
-            manual_warns = []
-        return lines, manual_warns
+# ══════════════════════════════════════════════════════════════════════════════
+# FUNCTION 3 — SEGMENT CALCULATOR
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown('## 03 — SEGMENT CALCULATOR')
+st.caption('Enter durations as HH:MM:SS or MM:SS')
 
-    # Build per-day reports
-    sorted_dates = sorted(set(d for (d, _) in days.keys()))
-    day_reports  = {}  # date_str -> list of lines
-    header_lines = [
-        'BROADCAST PLAYLIST CHECK REPORT' if lang=='en' else 'REPORTE DE VERIFICACIÓN DE PLAYLIST',
-        f'Generated / Generado: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
-        '═'*60, ''
-    ]
+c1, c2 = st.columns(2)
+with c1:
+    brk_total = st.text_input('Row 1 — Total break time',         placeholder='00:08:00', key='sc1')
+    segs_done = st.text_input('Row 2 — Total current segments',   placeholder='00:24:00', key='sc2')
+with c2:
+    trt_inp   = st.text_input('Row 3 — TRT (Total Run Time)',     placeholder='01:00:00', key='sc3')
+    seg_cnt   = st.number_input('Number of remaining segments', 1, 20, 3, key='sc4')
 
-    all_manual_warns = []  # list of (channel_label, date_str, count)
-    CH_DISPLAY = {'catv':'CATV 🌎','tvd':'TVD 📺','latam':'Pasiones Latam 🌹',
-                  'hu':'Hola TV US 🤝','hl':'Hola TV Latam 🌍','us':'Pasiones US ⭐','tn':'Fast Todonovelas 📺'}
-    with st.spinner(t('running')):
-        for date_str in sorted_dates:
-            d_lines = [f'{"DATE" if lang=="en" else "FECHA"}: {date_str}', '─'*60]
-            ch_reports = {}  # channel -> lines
-            for channel in ['catv', 'tvd', 'latam', 'us', 'tn', 'hu', 'hl']:
-                if channel not in selected: continue
-                key = (date_str, channel)
-                if key not in days: continue
-                info     = days[key]
-                xml_file = info.get('xml')
-                # grillas stores a list — pick the one whose week matches this date
-                gf_list  = grillas.get(channel, [])
-                if not isinstance(gf_list, list): gf_list = [gf_list] if gf_list else []
-                grilla_warn = None
-                try:
-                    from datetime import datetime as _dt2
-                    from checker import pick_grilla_for_date
-                    td = _dt2.strptime(date_str, '%Y-%m-%d').date()
-                    grilla_f, grilla_warn = pick_grilla_for_date(gf_list, td, channel)
-                except:
-                    grilla_f = gf_list[0] if gf_list else None
-                # Sort: partial (no marker) before full (has marker)
-                def _is_full(jf):
-                    try:
-                        jf.seek(0)
-                        d = json.load(jf)
-                        jf.seek(0)
-                        return any(a.get('type')=='marker'
-                                   for ev in d.get('events',[])[:3]
-                                   for a in ev.get('assets',[]))
-                    except: jf.seek(0); return False
-                jsons = sorted(info['json'], key=lambda f: (1 if _is_full(f) else 0, f.name))
-                ch_lines = []
-                if grilla_warn:
-                    ch_lines.append(f'  ⚠  {grilla_warn}')
-                for jf in jsons:
-                    ch_lines.append(f'JSON: {jf.name}')
-                    # ── HolaTV channels ──────────────────────────────────
-                    if channel in ('hu', 'hl'):
-                        try:
-                            jf.seek(0)
-                            _pl  = parse_json_playlist(json.load(jf))
-                            jf.seek(0)
-                            _lf  = info.get('xml') or info.get('log')
-                            _lr, _dx, _cx = (load_holatv_log(_lf, info['date'])
-                                             if _lf else ([], 0, 0))
-                            _gfl = grillas.get(channel, [])
-                            if not isinstance(_gfl, list): _gfl = [_gfl] if _gfl else []
-                            _gf_raw = pick_grilla_for_date(_gfl, info['date'], channel)
-                            _gf  = _gf_raw[0] if isinstance(_gf_raw, tuple) else _gf_raw
-                            _ge  = (parse_grilla_holatv_v2(_gf, info['date'])
-                                    if _gf and _gf.name.lower().endswith('.pdf') else [])
-                            _cs  = (_pl['programs'][0]['start']
-                                    if _pl['type']=='current' and _pl['programs'] else None)
-                            _fi  = {'json': jf.name,
-                                    'log':  _lf.name if _lf else None,
-                                    'grilla': _gf.name if _gf else None}
-                            ch_lines.append(generate_report_holatv_v2(
-                                CH_LABELS.get(channel, channel.upper()),
-                                _lr, _dx, _cx, _ge, _pl, lang,
-                                file_info=_fi, current_start_utc=_cs))
-                        except Exception as _he:
-                            ch_lines.append(f'  ERROR (HolaTV): {_he}')
-                        continue
-                    # ─────────────────────────────────────────────────────
-                    if xml_file:  xml_file.seek(0)
-                    if grilla_f:  grilla_f.seek(0)
-                    result = process_one(channel, jf, xml_file, grilla_f)
-                    plines, warns = result if isinstance(result, tuple) else (result, [])
-                    ch_lines += plines
-                    if warns:
-                        all_manual_warns.append(
-                            (CH_DISPLAY.get(channel, channel.upper()), date_str, len(warns))
-                        )
-                ch_reports[channel] = ch_lines
-                d_lines += ch_lines
-            d_lines.append('')
-            day_reports[date_str] = {'all': d_lines, 'channels': ch_reports}
+brk_s3  = tc_to_secs(brk_total) or 0
+segs_s3 = tc_to_secs(segs_done) or 0
+trt_s3  = tc_to_secs(trt_inp)
 
-    # ── SONY / AXN PROCESSING (single pass) ──────────────────────────────────
-    # Group results by (date, code) to integrate into date tabs like other channels
-    sony_date_ch = {}   # {date_str: {code: lines}}  for tab integration
-    sony_by_code = {}   # {code: lines}               for dedicated Sony tabs
-    if sony_files_raw and selected_sony:
-        with st.spinner(t('running')):
-            sony_pairings = pair_sony_files(sony_files_raw, lang)
-        sep60 = '═' * 60
-        for pair in sony_pairings:
-            if pair['code'] not in selected_sony:
-                continue
-            code     = pair['code']
-            date_str = str(pair['date']) if pair['date'] else '?'
-            markers_in_json = parse_sony_json_markers(pair['json_data']) if pair['json_data'] else []
-            if pair['json_data'] is None:   pl_type = SL('pl_none', lang)
-            elif markers_in_json:           pl_type = SL('pl_full', lang)
-            else:                           pl_type = SL('pl_partial', lang)
+if trt_s3 and trt_s3 > 0:
+    used   = brk_s3 + segs_s3
+    remain = max(0, trt_s3 - used)
+    sugg   = remain / seg_cnt if seg_cnt > 0 else 0
+    pct    = used / trt_s3 * 100
+    st.markdown(f"""
+    <div class="result-box">
+      <div style="color:var(--muted);font-size:0.8rem;margin-bottom:4px;">ROW 4 — TIME REMAINING</div>
+      <div class="result-big">{secs_to_tc(remain, with_frames=False)}</div>
+      <div class="result-sub">
+        Used: {secs_to_tc(used, with_frames=False)} ({pct:.0f}%) of TRT {secs_to_tc(trt_s3, with_frames=False)}<br>
+        Suggestion: <strong>{seg_cnt} segments × ~{secs_to_tc(sugg, with_frames=False)}</strong> each
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+else:
+    st.info('Enter TRT to calculate.')
 
-            seg_lbl = pair.get('segment_label', '')
-            multi_tag = ' [MULTI-DAY]' if pair.get('is_multi_day') else ''
-            json_name = (pair['json_file'].name if pair['json_file'] else '— not provided —') + seg_lbl
-            pairing_lines  = [sep60,
-                              f'CHANNEL: {code} — {pair["channel_name"]}',
-                              f'DATE: {date_str}{multi_tag}',
-                              f'PLAYLIST TYPE: {pl_type}',
-                              f'JSON: {json_name}',
-                              f'LOG:  {pair["xml_filename"] or "— not provided —"}',
-                              sep60]
-            # Last program before marker
-            if pair.get('json_data'):
-                _last = get_sony_last_program(pair['json_data'])
-                if _last:
-                    _lref  = _last['ref'].split('_')[0] if '_' in _last['ref'] else _last['ref']
-                    _lname = _last['name'][:50]
-                    _lt    = fmt_t(_last['start']) if _last['start'] else '?'
-                    pairing_lines.append(f'Last: {_lref} — {_lname} @ {_lt}')
-
-            if pair['json_data'] is None and pair['xml_file']:
-                pairing_lines.append(SL('no_json', lang))
-            elif pair['json_data'] is not None and pair['xml_file'] is None:
-                pairing_lines.append(SL('no_log', lang))
-                try:
-                    r_lines, _ = check_sony(pair['json_data'], [], None, lang)
-                    pairing_lines += r_lines
-                except: pass
-            elif pair['json_data'] is not None and pair['xml_file'] is not None:
-                try:
-                    pair['xml_file'].seek(0)
-                    xml_rows_sony = parse_sony_xml_log(pair['xml_file'])
-                    r_lines, _ = check_sony(pair['json_data'], xml_rows_sony,
-                                            pair['xml_filename'], lang)
-                    pairing_lines += r_lines
-                except Exception as e:
-                    pairing_lines.append(f'  ERROR: {e}')
-            pairing_lines.append('')
-
-            # Store under date bucket for tab integration
-            sony_date_ch.setdefault(date_str, {})
-            sony_date_ch[date_str].setdefault(code, [])
-            sony_date_ch[date_str][code] += pairing_lines
-            # Also store per-code for dedicated tabs
-            sony_by_code.setdefault(code, [])
-            sony_by_code[code] += pairing_lines
-
-    # ── BUILD FULL REPORT TEXT ────────────────────────────────────────────────
-    st.session_state['_report_ready'] = True
-    all_lines = header_lines[:]
-    for d in sorted_dates:
-        all_lines += day_reports.get(d, {}).get('all', [])
-    # Add Sony grouped by date
-    for date_str, codes in sorted(sony_date_ch.items()):
-        all_lines += [f'{"DATE" if lang=="en" else "FECHA"}: {date_str} (Sony/AXN)', '─'*60]
-        for code, lines in sorted(codes.items()):
-            all_lines += lines
-    full_text = '\n'.join(all_lines)
-
-    # Store all report data in session state — survives widget interactions
-    st.session_state['report_full_text']    = full_text
-    st.session_state['report_day_reports']   = day_reports
-    st.session_state['report_sorted_dates']  = sorted_dates
-    st.session_state['report_header_lines']  = header_lines
-    st.session_state['report_sony_date_ch']  = sony_date_ch
-    st.session_state['report_sony_by_code']  = sony_by_code
-    st.session_state['report_all_warns']     = all_manual_warns
-    st.session_state['report_lang']          = lang
-
-
-# ── REPORT RENDER (outside button block — survives reruns) ──────────────────
-if st.session_state.get('_report_ready'):
-    full_text    = st.session_state.get('report_full_text', '')
-    day_reports  = st.session_state.get('report_day_reports', {})
-    sorted_dates = st.session_state.get('report_sorted_dates', [])
-    header_lines = st.session_state.get('report_header_lines', [])
-    sony_date_ch = st.session_state.get('report_sony_date_ch', {})
-    sony_by_code = st.session_state.get('report_sony_by_code', {})
-    lang         = st.session_state.get('report_lang', 'en')
-
-    st.subheader('📄 Report' if lang=='en' else '📄 Reporte')
-
-    # ── Manual review warnings
-    all_manual_warns = st.session_state.get('report_all_warns', [])
-    if all_manual_warns:
-        warn_header = '⚠ MANUAL REVIEW NEEDED:' if lang == 'en' else '⚠ REVISIÓN MANUAL REQUERIDA:'
-        warn_lines = [warn_header]
-        for ch_lbl, d_str, cnt in all_manual_warns:
-            warn_lines.append('')
-            warn_lines.append(f'  {ch_lbl}  —  {d_str}')
-            warn_lines.append(f'    {cnt} commercial block{"s" if cnt>1 else ""} need manual review')
-        st.error('\n'.join(warn_lines))
-
-    # ── Empty report detection
-    empty_reports = []
-    for date_str in sorted_dates:
-        ch_rpts = day_reports.get(date_str, {}).get('channels', {})
-        for ch, lines in ch_rpts.items():
-            text = '\n'.join(lines)
-            has_content = any(s in text for s in ['SUMMARY', 'PROGRAM CHECK', 'COMMERCIAL CHECK'])
-            if not has_content:
-                empty_reports.append((CH_DISPLAY.get(ch, ch), date_str))
-    if empty_reports:
-        empty_lbl = 'Empty Reports:' if lang == 'en' else 'Reportes Vacíos:'
-        e_lines = [f'ℹ  {empty_lbl}']
-        for ch_lbl, d_str in empty_reports:
-            e_lines.append(f'  {ch_lbl} — {d_str}')
-        st.warning('\n'.join(e_lines))
-
-    # ── Not Ingested only (expander with channel filter + download)
-    with st.expander('🔍 Not Ingested only' if lang=='en' else '🔍 Solo No Ingestados'):
-        # Build per-channel NI text from full report
-        _ni_by_ch = {}
-        _cur_ch = None
-        _ft = full_text
-        for _line in _ft.splitlines():
-            if _line.startswith('CHANNEL:') or _line.startswith('CANAL:'):
-                _cur_ch = _line
-            if 'NOT INGESTED' in _line or 'NO INGESTADO' in _line:
-                if _cur_ch not in _ni_by_ch: _ni_by_ch[_cur_ch] = []
-                _ni_by_ch[_cur_ch].append(_line)
-        if _ni_by_ch:
-            _ni_opts = list(_ni_by_ch.keys())
-            _ni_sel  = st.multiselect(
-                'Filter by channel' if lang=='en' else 'Filtrar por canal',
-                options=_ni_opts, default=_ni_opts,
-                format_func=lambda x: x.replace('CHANNEL: ','').replace('CANAL: ',''),
-                key='ni_ch_filter')
-            _ni_lines = []
-            for _ch in _ni_sel:
-                _ni_lines.append(_ch)
-                _ni_lines += _ni_by_ch[_ch]
-                _ni_lines.append('')
-            _ni_text = '\n'.join(_ni_lines)
-            st.text(_ni_text)
-            st.download_button(
-                '⬇ Download Not Ingested (.txt)' if lang=='en' else '⬇ Descargar No Ingestados (.txt)',
-                _ni_text,
-                file_name=f'not_ingested_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt',
-                mime='text/plain', use_container_width=True, key='dl_ni')
-        else:
-            st.write('None found.' if lang=='en' else 'Ninguno encontrado.')
-
-    # Build tab structure: All + per-date (regular + Sony mixed) + dedicated Sony tabs
-    CH_DISPLAY2 = {**CH_DISPLAY,
-                   **{code: f'{code} {SONY_EMOJI.get(code,"📺")} {SONY_CHANNEL_MAP.get(code,code)}'
-                      for code in st.session_state.get('report_sony_by_code',{})}}
-
-    # Merge Sony channels into date reports for unified date tabs
-    all_tab_dates = sorted(set(list(sorted_dates) + list(sony_date_ch.keys())))
-
-    def _render_day_tab(date_str, key_prefix):
-        day_data   = st.session_state.get('report_day_reports',"").get(date_str, {})
-        ch_reports = dict(day_data.get('channels', {}))
-        # Add Sony channels for this date
-        sony_for_date = st.session_state.get('report_sony_date_ch',{}).get(date_str, {})
-        for code, lines in sorted(sony_for_date.items()):
-            ch_reports[code] = lines
-        day_text = '\n'.join(header_lines + day_data.get('all', []) +
-                              [l for lines in sony_for_date.values() for l in lines])
-        if len(ch_reports) > 1:
-            ch_tab_labels = [CH_DISPLAY2.get(ch, ch) for ch in ch_reports]
-            ch_tabs = st.tabs(ch_tab_labels)
-            for j, (ch, ch_lines) in enumerate(ch_reports.items()):
-                with ch_tabs[j]:
-                    ch_text = '\n'.join(header_lines + ch_lines)
-                    st.text(ch_text)
-                    st.download_button(t('dl'), ch_text,
-                                       file_name=f'report_{date_str}_{ch}_{datetime.now().strftime("%H%M%S")}.txt',
-                                       mime='text/plain', use_container_width=True,
-                                       key=f'dl_{key_prefix}_{date_str}_{ch}')
-        else:
-            st.text(day_text)
-        dl_day_lbl = f'⬇ {"Current" if lang=="en" else "Actual"} {date_str} (.txt)'
-        st.download_button(dl_day_lbl, day_text,
-                           file_name=f'report_{date_str}_{datetime.now().strftime("%H%M%S")}.txt',
-                           mime='text/plain', use_container_width=True,
-                           key=f'dl_{key_prefix}_{date_str}_all')
-
-    if all_tab_dates:
-        tab_labels = [t('tab_all')] + [f'📅 {d}' for d in all_tab_dates]
-
-        tabs = st.tabs(tab_labels)
-
-        # All tab
-        with tabs[0]:
-            st.text(full_text)
-            dl_lbl = '⬇ Full Report (.txt)' if lang=='en' else '⬇ Reporte Completo (.txt)'
-            st.download_button(dl_lbl, st.session_state.get('report_full_text',""),
-                               file_name=f'report_all_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt',
-                               mime='text/plain', use_container_width=True, key='dl_all')
-
-        # Date tabs (regular channels + Sony merged by date)
-        for i, date_str in enumerate(all_tab_dates):
-            with tabs[i+1]:
-                _render_day_tab(date_str, 'day')
-    else:
-        st.text(full_text)
-        dl_lbl3 = '⬇ Full Report (.txt)' if lang=='en' else '⬇ Reporte Completo (.txt)'
-        st.download_button(dl_lbl3, st.session_state.get('report_full_text',""),
-                           file_name=f'report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt',
-                           mime='text/plain', use_container_width=True, key='dl_single_all')
+st.markdown('<div style="margin-top:40px;text-align:center;color:var(--muted);font-size:0.75rem;font-family:JetBrains Mono,monospace;">© 2026 Mauricio Hernandez · Broadcast Operations Toolkit</div>', unsafe_allow_html=True)
