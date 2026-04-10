@@ -912,7 +912,9 @@ def pair_sony_files(sony_files, lang='en'):
                         matched_xml = xf; break
 
             # 3. Last resort: only one XML for this channel
-            if not matched_xml:
+            # Only use for single-segment JSONs or partial segments.
+            # For full segments in multi-day, wrong-date fallback causes mismatches.
+            if not matched_xml and (total == 1 or seg['is_partial']):
                 available = [xf for xf in xml_list if xf['code'] == code]
                 if len(available) == 1:
                     matched_xml = available[0]
