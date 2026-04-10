@@ -59,6 +59,11 @@ L = {
 }
 def t(k): return L[k][lang]
 
+# ── GLOBAL DISPLAY MAPS (needed in render block outside button) ─────────
+CH_DISPLAY = {'catv':'CATV 🌎','tvd':'TVD 📺','latam':'Pasiones Latam 🌹',
+              'us':'Pasiones US ⭐','tn':'Fast Todonovelas 📺',
+              'hu':'Hola TV US 🤝','hl':'Hola TV Latam 🌍'}
+
 col_title, col_copy = st.columns([3, 1])
 with col_title:
     st.title(t('title'))
@@ -361,11 +366,14 @@ if st.button(t('run'), type='primary', use_container_width=True):
             elif markers_in_json:           pl_type = SL('pl_full', lang)
             else:                           pl_type = SL('pl_partial', lang)
 
+            seg_lbl = pair.get('segment_label', '')
+            multi_tag = ' [MULTI-DAY]' if pair.get('is_multi_day') else ''
+            json_name = (pair['json_file'].name if pair['json_file'] else '— not provided —') + seg_lbl
             pairing_lines  = [sep60,
                               f'CHANNEL: {code} — {pair["channel_name"]}',
-                              f'DATE: {date_str}',
+                              f'DATE: {date_str}{multi_tag}',
                               f'PLAYLIST TYPE: {pl_type}',
-                              f'JSON: {pair["json_file"].name if pair["json_file"] else "— not provided —"}',
+                              f'JSON: {json_name}',
                               f'LOG:  {pair["xml_filename"] or "— not provided —"}',
                               sep60]
 
