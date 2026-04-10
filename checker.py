@@ -787,6 +787,33 @@ def detect_files(uploaded_files):
 
 
 
+def get_sony_last_program(json_data):
+    """
+    Find the last program event before the first mid-file marker (or end of events).
+    Returns dict with 'name', 'ref', 'start' or None.
+    """
+    events = json_data.get('events', [])
+    # Find first mid-file marker index
+    cutoff = len(events)
+    for i, ev in enumerate(events):
+        if i < 3: continue  # skip leading markers
+        for a in ev.get('assets', []):
+            if a.get('type') == 'marker':
+                cutoff = i
+                break
+        if cutoff < len(events):
+            break
+
+    # Walk backward from cutoff to find last program asset
+    for ev in reversed(events[:cutoff]):
+        for a in ev.get('assets', []):
+            if a.get('type') in ('Program', 'live'):
+                ref   = a.get('reference', '')
+                start = parse_timecode(ev.get('startTime', ''))
+                name  = ev.get('name', '')
+                return {'name': name, 'ref': ref, 'start': start}
+    return None
+
 def split_sony_json_by_markers(data, json_filename=''):
     """
     Split a Sony JSON into segments at each mid-file marker.

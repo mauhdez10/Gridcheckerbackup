@@ -10,7 +10,7 @@ from checker import (
     parse_json_playlist, parse_xml_log, parse_xml_log_tn, parse_grilla,
     generate_report, check_promo_repeats, detect_files,
     parse_sony_xml_log, check_sony, pair_sony_files, SONY_CHANNEL_MAP,
-    parse_sony_json_markers, split_sony_json_by_markers,
+    parse_sony_json_markers, split_sony_json_by_markers, get_sony_last_program,
     load_holatv_log, group_holatv_blocks, parse_grilla_holatv_v2,
     generate_report_holatv_v2, pick_grilla_for_date,
 )
@@ -395,6 +395,14 @@ if st.button(t('run'), type='primary', use_container_width=True):
                               f'JSON: {json_name}',
                               f'LOG:  {pair["xml_filename"] or "— not provided —"}',
                               sep60]
+            # Last program before marker
+            if pair.get('json_data'):
+                _last = get_sony_last_program(pair['json_data'])
+                if _last:
+                    _lref  = _last['ref'].split('_')[0] if '_' in _last['ref'] else _last['ref']
+                    _lname = _last['name'][:50]
+                    _lt    = fmt_t(_last['start']) if _last['start'] else '?'
+                    pairing_lines.append(f'Last: {_lref} — {_lname} @ {_lt}')
 
             if pair['json_data'] is None and pair['xml_file']:
                 pairing_lines.append(SL('no_json', lang))
